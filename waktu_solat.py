@@ -2,13 +2,14 @@ import json
 import requests
 from datetime import datetime
 from pathlib import Path
-
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 ZONE_FILE = BASE_DIR / "zone-waktu-solat.json"
 
-API_BASE_URL = "https://api.waktusolat.app"
-
+API_BASE_URL = os.getenv("URL_WAKTU_SOLAT")
 
 def load_zones():
     with open(ZONE_FILE, "r", encoding="utf-8") as file:

@@ -8,6 +8,7 @@ import ollama
 import re
 from datetime import datetime
 from waktu_solat import get_waktu_solat_by_daerah
+from food import search_food
 
 load_dotenv()
 
@@ -31,6 +32,21 @@ SYSTEM_PROMPT = {
         "Do not write long paragraphs."
     )
 }
+
+def extract_food_query(user_text: str):
+    text = user_text.lower()
+
+    keywords = ["kalori", "calorie", "makan", "food", "eat"]
+
+    if not any(k in text for k in keywords):
+        return None
+
+    # remove trigger words
+    text = re.sub(r"\b(kalori|calorie|makan|food|eat)\b", "", text)
+    query = text.strip()
+
+    return query if query else None
+
 
 def extract_solat_daerah(user_text: str):
     text = user_text.lower().strip()
@@ -124,6 +140,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             await update.message.reply_text(answer)
+            return
+
+        food_query = extract_food_query(user_text)
+        if food_query:
+            message = search_food(food_query)
+
+            await update.message.reply_text(message, parse_mode="Markdown")
             return
 
         answer = ask_local_model(user_id, user_text)
