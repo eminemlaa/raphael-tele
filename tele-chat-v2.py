@@ -1,6 +1,7 @@
 from openai import OpenAI, APIConnectionError
 import os
 import json
+from pathlib import Path
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_URL = os.getenv("OPENAI_API_URL")
 OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
 MODEL_NAME_2 = os.getenv("MODEL_NAME_2")
+LOG_DIR = Path(os.getenv("TELEGRAM_LOG_DIR", "/opt/llm/conversation_logs"))
 
 # client = ollama.Client(host=OLLAMA_URL)
 client = OpenAI(
@@ -27,6 +29,25 @@ client = OpenAI(
 
 # Stores conversation history per Telegram user
 user_conversations = {}
+
+
+def get_user_label(user) -> str:
+    username = f"@{user.username}" if user.username else "no_username"
+    full_name = " ".join(
+        part for part in [user.first_name, user.last_name] if part
+    ) or "no_name"
+
+    return f"{full_name} ({username}, id={user.id})"
+
+
+def log_conversation(user, role: str, text: str):
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = LOG_DIR / f"user_{user.id}.txt"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with open(log_file, "a", encoding="utf-8") as file:
+        file.write(f"[{timestamp}] {role.upper()} {get_user_label(user)}\n")
+        file.write(f"{text}\n\n")
 
 
 SYSTEM_PROMPT = {
@@ -202,18 +223,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     reset_conversation(user_id)
 
-    await update.message.reply_text(
-        "yeah. send something."
-    )
+    reply = "yeah. send something."
+    log_conversation(update.effective_user, "bot", reply)
+    await update.message.reply_text(reply)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user = update.effective_user
     user_text = update.message.text.strip()
+    log_conversation(user, "user", user_text)
 
     if user_text.lower() == "new chat":
         reset_conversation(user_id)
-        await update.message.reply_text("new chat. happy now?")
+        reply = "new chat. happy now?"
+        log_conversation(user, "bot", reply)
+        await update.message.reply_text(reply)
         return
 
     #await update.message.reply_text("typing...")
@@ -221,13 +246,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         replies = ask_local_model(user_id, user_text)
         for reply in replies:
+            log_conversation(user, "bot", reply)
             await update.message.reply_text(reply)
 
     except APIConnectionError:
-        await update.message.reply_text("model not running. tragic.")
+        reply = "model not running. tragic."
+        log_conversation(user, "bot", reply)
+        await update.message.reply_text(reply)
 
     except Exception as e:
-        await update.message.reply_text(f"error: {e}")
+        reply = f"error: {e}"
+        log_conversation(user, "bot", reply)
+        await update.message.reply_text(reply)
 
 
 def main():
