@@ -1,7 +1,6 @@
 from openai import OpenAI, APIConnectionError
 import os
 import json
-import random
 from pathlib import Path
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -21,11 +20,6 @@ OPENAI_API_URL = os.getenv("OPENAI_API_URL")
 OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
 MODEL_NAME_2 = os.getenv("MODEL_NAME_2")
 LOG_DIR = Path(os.getenv("TELEGRAM_LOG_DIR", "/opt/llm/conversation_logs"))
-KNOWN_USERS_FILE = Path(os.getenv("TELEGRAM_KNOWN_USERS_FILE", "/opt/llm/known_users.json"))
-PROMPT_CONFIG_FILE = Path(os.getenv("PROMPT_CONFIG_FILE", "/opt/llm/prompts.yaml"))
-PROACTIVE_CHECK_SECONDS = int(os.getenv("PROACTIVE_CHECK_SECONDS", "3600"))
-PROACTIVE_FIRST_SECONDS = int(os.getenv("PROACTIVE_FIRST_SECONDS", "60"))
-PROACTIVE_CHANCE = float(os.getenv("PROACTIVE_CHANCE", "0.15"))
 
 # client = ollama.Client(host=OLLAMA_URL)
 client = OpenAI(
@@ -35,100 +29,92 @@ client = OpenAI(
 
 # Stores conversation history per Telegram user
 user_conversations = {}
-known_users = {}
-
-
-def load_prompt_config() -> dict:
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError(
-            "PyYAML is required to load prompts.yaml. Run: pip install PyYAML"
-        ) from exc
-
-    with open(PROMPT_CONFIG_FILE, "r", encoding="utf-8") as file:
-        config = yaml.safe_load(file) or {}
-
-    required_keys = ["system_prompt", "proactive_prompt", "tools"]
-    missing_keys = [key for key in required_keys if key not in config]
-    if missing_keys:
-        raise RuntimeError(
-            f"Missing required prompt config keys: {', '.join(missing_keys)}"
-        )
-
-    return config
-
-
-PROMPT_CONFIG = load_prompt_config()
-SYSTEM_PROMPT = {
-    "role": "system",
-    "content": PROMPT_CONFIG["system_prompt"],
-}
-PROACTIVE_PROMPT = PROMPT_CONFIG["proactive_prompt"]
-TOOLS = PROMPT_CONFIG["tools"]
-
-
-def user_to_record(user) -> dict:
-    return {
-        "id": user.id,
-        "username": user.username,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-    }
-
-
-def load_known_users():
-    global known_users
-
-    if not KNOWN_USERS_FILE.exists():
-        known_users = {}
-        return
-
-    with open(KNOWN_USERS_FILE, "r", encoding="utf-8") as file:
-        known_users = json.load(file)
-
-
-def save_known_users():
-    KNOWN_USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(KNOWN_USERS_FILE, "w", encoding="utf-8") as file:
-        json.dump(known_users, file, indent=2)
-
-
-def remember_user(user):
-    known_users[str(user.id)] = user_to_record(user)
-    save_known_users()
 
 
 def get_user_label(user) -> str:
-    if isinstance(user, dict):
-        username_value = user.get("username")
-        first_name = user.get("first_name")
-        last_name = user.get("last_name")
-        user_id = user.get("id")
-    else:
-        username_value = user.username
-        first_name = user.first_name
-        last_name = user.last_name
-        user_id = user.id
-
-    username = f"@{username_value}" if username_value else "no_username"
+    username = f"@{user.username}" if user.username else "no_username"
     full_name = " ".join(
-        part for part in [first_name, last_name] if part
+        part for part in [user.first_name, user.last_name] if part
     ) or "no_name"
 
-    return f"{full_name} ({username}, id={user_id})"
+    return f"{full_name} ({username}, id={user.id})"
 
 
 def log_conversation(user, role: str, text: str):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    user_id = user.get("id") if isinstance(user, dict) else user.id
-    log_file = LOG_DIR / f"user_{user_id}.txt"
+    log_file = LOG_DIR / f"user_{user.id}.txt"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     with open(log_file, "a", encoding="utf-8") as file:
         file.write(f"[{timestamp}] {role.upper()} {get_user_label(user)}\n")
         file.write(f"{text}\n\n")
+
+
+SYSTEM_PROMPT = {
+    "role": "system",
+    "content": (
+        "You are a talking cat named Raphael."
+        "You are a dry texter and very rude like a teenager. "
+        "You are sarcastic and casual. "
+        "Keep replies short. some typo or short form is normal because you are a cat."
+        "Do not write long paragraphs."
+        "if the human is asking for help. you will help them if they will give you foods later on."
+        "dont reply with actions (eg: **Sleeps , **lick paws)"
+        "reply with proper words but lazyly as a dry texter who can be rude sometimes."
+        "Use tools when the human asks about waktu solat/prayer times such as subuh, zohor, asar, maghrib, isyak or food/calorie/nutrition info."
+        "never give your own asnwer. if you cant use the tool. let them know."
+        "After using a tool, do not repeat the tool output. Only give one short comment about it."
+    )
+}
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_waktu_solat",
+            "description": "Get Malaysian waktu solat/prayer times for a daerah, negeri",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "daerah": {
+                        "type": "string",
+                        "description": "Daerah or negeri. Example: Shah Alam, Klang,",
+                    },
+                    "day": {
+                        "type": "integer",
+                        "description": "Day of month. Use today if the user does not mention a date.",
+                    },
+                    "month": {
+                        "type": "integer",
+                        "description": "Month number. Use current month if the user does not mention a date.",
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Year. Use current year if the user does not mention a date.",
+                    },
+                },
+                "required": ["daerah"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_food",
+            "description": "Search food calories and nutrition facts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Food name to search. Example: nasi lemak, roti canai.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
 
 
 def run_tool(name: str, arguments: dict) -> str:
@@ -162,12 +148,7 @@ def message_to_dict(message):
     return message_dict
 
 
-def ask_local_model(
-    user_id: int,
-    prompt: str,
-    tool_choice="auto",
-    include_tool_comment: bool = True,
-):
+def ask_local_model(user_id: int, prompt: str):
     if user_id not in user_conversations:
         user_conversations[user_id] = [SYSTEM_PROMPT]
 
@@ -181,18 +162,14 @@ def ask_local_model(
             [SYSTEM_PROMPT] + user_conversations[user_id][-10:]
         )
 
-    request_args = {
-        "model": MODEL_NAME_2,  # your vLLM model name
-        "messages": user_conversations[user_id],
-        "max_tokens": 50,
-        "temperature": 0.5,
-    }
-
-    if tool_choice != "none":
-        request_args["tools"] = TOOLS
-        request_args["tool_choice"] = tool_choice
-
-    response = client.chat.completions.create(**request_args)
+    response = client.chat.completions.create(
+        model=MODEL_NAME_2,  # your vLLM model name
+        messages=user_conversations[user_id],
+        tools=TOOLS,
+        tool_choice="auto",
+        max_tokens=50,
+        temperature=0.5,
+    )
 
     message = response.choices[0].message
     user_conversations[user_id].append(message_to_dict(message))
@@ -213,14 +190,6 @@ def ask_local_model(
                 "tool_call_id": tool_call.id,
                 "content": tool_result,
             })
-
-        if not include_tool_comment:
-            answer = "\n\n".join(tool_results)
-            user_conversations[user_id].append({
-                "role": "assistant",
-                "content": answer
-            })
-            return tool_results
 
         response = client.chat.completions.create(
             model=MODEL_NAME_2,
@@ -250,28 +219,8 @@ def reset_conversation(user_id: int):
     user_conversations[user_id] = [SYSTEM_PROMPT]
 
 
-async def send_random_owner_question(context: ContextTypes.DEFAULT_TYPE):
-    for user_id, user_record in list(known_users.items()):
-        if random.random() > PROACTIVE_CHANCE:
-            continue
-
-        try:
-            replies = ask_local_model(
-                int(user_id),
-                PROACTIVE_PROMPT,
-                tool_choice="none",
-            )
-
-            for reply in replies:
-                log_conversation(user_record, "bot", reply)
-                await context.bot.send_message(chat_id=int(user_id), text=reply)
-        except Exception as e:
-            log_conversation(user_record, "error", f"proactive message failed: {e}")
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    remember_user(update.effective_user)
     reset_conversation(user_id)
 
     reply = "yeah. send something."
@@ -283,7 +232,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = update.effective_user
     user_text = update.message.text.strip()
-    remember_user(user)
     log_conversation(user, "user", user_text)
 
     if user_text.lower() == "new chat":
@@ -316,21 +264,10 @@ def main():
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("Please set TELEGRAM_BOT_TOKEN environment variable.")
 
-    load_known_users()
-
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    if app.job_queue:
-        app.job_queue.run_repeating(
-            send_random_owner_question,
-            interval=PROACTIVE_CHECK_SECONDS,
-            first=PROACTIVE_FIRST_SECONDS,
-        )
-    else:
-        print('JobQueue not available. Install with: pip install "python-telegram-bot[job-queue]"')
 
     print("Telegram bot is running...")
     app.run_polling()
