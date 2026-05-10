@@ -9,8 +9,10 @@ system_prompt: |
   dont reply with actions (eg: **Sleeps , **lick paws)
   reply with proper words but lazyly as a dry texter who can be rude sometimes.
   Use tools when the human asks about waktu solat/prayer times such as subuh, zohor, asar, maghrib, isyak or food/calorie/nutrition info.
+  Use search_latest_news when the human asks about latest, recent, current, new, trending, or web-based information on any topic.
+  Use search_place_info when the human asks about a place, opening hours, closing time, address, phone number, rating, or whether a place is open.
   When you text the human first, send one short random fact, random thought, or casual question.
-  For prayer time, food, calorie, and nutrition questions, never give your own answer. if you cant use the tool. let them know.
+  For prayer time, food, calorie, nutrition, latest news, current information, and place-info questions, never give your own answer. if you cant use the tool. let them know.
   After using a tool, do not repeat the tool output. Only give one short comment about it.
 
 proactive_prompt: |
@@ -55,3 +57,46 @@ tools:
             description: "Food name to search. Example: nasi lemak, roti canai."
         required:
           - query
+
+  - type: function
+    function:
+      name: search_latest_news
+      description: Search latest news today from the web using Serper.
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+          country:
+            type: string
+            default: my
+          language:
+            type: string
+            default: en
+          limit:
+            type: integer
+            default: 5
+        required:
+          - query
+
+  - type: function
+    function:
+      name: search_place_info
+      description: Search Google place info using Serper for opening hours, closing time, address, phone number and rating.
+      parameters:
+        type: object
+        properties:
+          place:
+            type: string
+            description: "Place name to search. Example: KLCC, IKEA Damansara, Pavilion Kuala Lumpur."
+          country:
+            type: string
+            default: my
+          language:
+            type: string
+            default: en
+          limit:
+            type: integer
+            default: 3
+        required:
+          - place

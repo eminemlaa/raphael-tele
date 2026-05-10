@@ -2,6 +2,7 @@ from openai import OpenAI, APIConnectionError
 import os
 import json
 import random
+import requests
 from pathlib import Path
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -20,6 +21,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_URL = os.getenv("OPENAI_API_URL")
 OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
 MODEL_NAME_2 = os.getenv("MODEL_NAME_2")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+SERPER_NEWS_URL = os.getenv("SERPER_NEWS_URL", "https://google.serper.dev/news")
+SERPER_PLACES_URL = os.getenv("SERPER_PLACES_URL", "https://google.serper.dev/places")
 LOG_DIR = Path(os.getenv("TELEGRAM_LOG_DIR", "/opt/llm/conversation_logs"))
 KNOWN_USERS_FILE = Path(os.getenv("TELEGRAM_KNOWN_USERS_FILE", "/opt/llm/known_users.json"))
 PROMPT_CONFIG_FILE = Path(os.getenv("PROMPT_CONFIG_FILE", "/opt/llm/prompts.yaml"))
@@ -131,6 +135,147 @@ def log_conversation(user, role: str, text: str):
         file.write(f"{text}\n\n")
 
 
+def format_serper_news(data: dict, query: str, limit: int) -> str:
+    news_items = data.get("news") or data.get("organic") or []
+    if not news_items:
+        return f"No fresh news found for '{query}'. tragic."
+
+    lines = [f"Latest news for: {query}"]
+
+    for index, item in enumerate(news_items[:limit], 1):
+        title = item.get("title") or "Untitled"
+        source = item.get("source") or item.get("site") or "Unknown source"
+        date = item.get("date") or item.get("publishedDate") or "No date"
+        snippet = item.get("snippet") or ""
+        link = item.get("link") or item.get("url") or ""
+
+        lines.append(
+            "\n".join(
+                part for part in [
+                    f"{index}. {title}",
+                    f"Source: {source} | Date: {date}",
+                    f"Summary: {snippet}" if snippet else "",
+                ] if part
+            )
+        )
+
+    return "\n\n".join(lines)
+
+
+def format_place_hours(hours) -> str:
+    if isinstance(hours, dict):
+        return "\n".join(f"- {day}: {time}" for day, time in hours.items())
+
+    if isinstance(hours, list):
+        return "\n".join(f"- {item}" for item in hours)
+
+    if isinstance(hours, str):
+        return hours
+
+    return ""
+
+
+def format_serper_places(data: dict, place: str, limit: int) -> str:
+    places = data.get("places") or data.get("localResults") or []
+    if not places:
+        return f"No place info found for '{place}'. maybe google is also lazy."
+
+    lines = [f"{place}"]
+
+    for index, item in enumerate(places[:limit], 1):
+        title = item.get("title") or item.get("name") or "Unknown place"
+        address = item.get("address") or item.get("formattedAddress") or ""
+        phone = item.get("phoneNumber") or item.get("phone") or ""
+        rating = item.get("rating")
+        rating_count = item.get("ratingCount") or item.get("reviews")
+        website = item.get("website") or ""
+        link = item.get("link") or item.get("url") or item.get("placeIdSearch") or ""
+        hours = format_place_hours(
+            item.get("openingHours")
+            or item.get("hours")
+            or item.get("workingHours")
+        )
+
+        rating_text = ""
+        if rating:
+            rating_text = f"Rating: {rating}"
+            if rating_count:
+                rating_text += f" ({rating_count} reviews)"
+
+        lines.append(
+            "\n".join(
+                part for part in [
+                    f"{index}. {title}",
+                    f"Address: {address}" if address else "",
+                    rating_text,
+                    f"Phone: {phone}" if phone else "",
+                    f"Hours:\n{hours}" if hours else "Hours: Not shown in result",
+                    # f"Website: {website}" if website else "",
+                    # f"Link: {link}" if link else "",
+                ] if part
+            )
+        )
+
+    return "\n\n".join(lines)
+
+
+def search_latest_news(query: str, country: str = "my", language: str = "en", limit: int = 5) -> str:
+    if not SERPER_API_KEY:
+        raise RuntimeError("SERPER_API_KEY is not set.")
+
+    limit = max(1, min(int(limit or 5), 10))
+    payload = {
+        "q": query,
+        "gl": country or "my",
+        "hl": language or "en",
+        "num": limit,
+        "tbs": "qdr:d",
+    }
+
+    headers = {
+        "X-API-KEY": SERPER_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(
+        SERPER_NEWS_URL,
+        headers=headers,
+        json=payload,
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    return format_serper_news(response.json(), query, limit)
+
+
+
+def search_place_info(place: str, country: str = "my", language: str = "en", limit: int = 3) -> str:
+    if not SERPER_API_KEY:
+        raise RuntimeError("SERPER_API_KEY is not set.")
+
+    limit = max(1, min(int(limit or 3), 5))
+    payload = {
+        "q": place,
+        "gl": country or "my",
+        "hl": language or "en",
+        "num": limit,
+    }
+    headers = {
+        "X-API-KEY": SERPER_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(
+        SERPER_PLACES_URL,
+        headers=headers,
+        json=payload,
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    return format_serper_places(response.json(), place, limit)
+
+
 def run_tool(name: str, arguments: dict) -> str:
     if name == "get_waktu_solat":
         today = datetime.now()
@@ -143,6 +288,22 @@ def run_tool(name: str, arguments: dict) -> str:
 
     if name == "search_food":
         return search_food(arguments["query"])
+
+    if name == "search_latest_news":
+        return search_latest_news(
+            query=arguments["query"],
+            country=arguments.get("country") or "my",
+            language=arguments.get("language") or "en",
+            limit=arguments.get("limit") or 5,
+        )
+
+    if name == "search_place_info":
+        return search_place_info(
+            place=arguments["place"],
+            country=arguments.get("country") or "my",
+            language=arguments.get("language") or "en",
+            limit=arguments.get("limit") or 3,
+        )
 
     raise ValueError(f"unknown tool: {name}")
 
